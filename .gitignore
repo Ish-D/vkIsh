@@ -11,3 +11,6 @@ CTestTestfile.cmake
 /build
 /.vscode
 _deps
+*.bat
+*.spv
+/.vs
