@@ -14,3 +14,5 @@ _deps
 *.bat
 *.spv
 /.vs
+.txt
+.json

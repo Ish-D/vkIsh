@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 #include <algorithm>
 #include <set>
@@ -23,6 +24,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityF
     return VK_FALSE;
 }
 
+std::string readFile(const std::string filename)
+{
+    const std::ifstream t(filename);
+    std::stringstream buffer;
+    buffer << t.rdbuf();
+    return buffer.str();
+}
 
 int main()	
 {
@@ -92,11 +100,15 @@ int main()
         queueCreateInfos.push_back(vk::DeviceQueueCreateInfo{ vk::DeviceQueueCreateFlags(), static_cast<uint32_t>(queueFamilyIndex), 1, &queuePriority });
     }
 
-    const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME };
+
+    // VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeatures{};
+    // dynamicRenderingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+    // dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
 
     vk::UniqueDevice device = physicalDevice.createDeviceUnique(
         vk::DeviceCreateInfo(vk::DeviceCreateFlags(), static_cast<uint32_t>(queueCreateInfos.size()), queueCreateInfos.data(), 
-            0u, nullptr, static_cast<uint32_t>(deviceExtensions.size()), deviceExtensions.data()));
+            0u, nullptr, static_cast<uint32_t>(deviceExtensions.size()), deviceExtensions.data()));    
 
     uint32_t inFlightFrames = 2;
     struct SM
@@ -132,61 +144,25 @@ int main()
         imageViews.push_back(device->createImageViewUnique(imageViewCreateInfo));
     }
 
-    std::string kShaderSource = R"vertexshader(
-        #version 450
-        #extension GL_ARB_separate_shader_objects : enable
-        out gl_PerVertex {
-            vec4 gl_Position;
-        };
-        layout(location = 0) out vec3 fragColor;
-        vec2 positions[3] = vec2[](
-            vec2(0.0, -0.5),
-            vec2(0.5, 0.5),
-            vec2(-0.5, 0.5)
-        );
-        vec3 colors[3] = vec3[](
-            vec3(1.0, 0.0, 0.0),
-            vec3(0.0, 1.0, 0.0),
-            vec3(0.0, 0.0, 1.0)
-        );
-        void main() {
-            gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-            fragColor = colors[gl_VertexIndex];
-        }
-        )vertexshader";
-
-    std::string fragmentShader = R"fragmentShader(
-        #version 450
-        #extension GL_ARB_separate_shader_objects : enable
-        layout(location = 0) in vec3 fragColor;
-        layout(location = 0) out vec4 outColor;
-        void main() {
-            outColor = vec4(fragColor, 1.0);
-        }
-        )fragmentShader";
+    auto vertShader = readFile("src/shaders/shader.vert");
+    auto fragShader = readFile("src/shaders/shader.frag");
 
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
 
-    shaderc::SpvCompilationResult vertShaderModule = compiler.CompileGlslToSpv(kShaderSource, shaderc_glsl_vertex_shader, "vertex shader", options);
-    if (vertShaderModule.GetCompilationStatus() != shaderc_compilation_status_success) {
-        std::cerr << vertShaderModule.GetErrorMessage();
-    }
+    shaderc::SpvCompilationResult vertShaderModule = compiler.CompileGlslToSpv(vertShader, shaderc_glsl_vertex_shader, "vertex shader", options);
+    if (vertShaderModule.GetCompilationStatus() != shaderc_compilation_status_success) std::cerr << vertShaderModule.GetErrorMessage();
     auto vertShaderCode = std::vector<uint32_t>{ vertShaderModule.cbegin(), vertShaderModule.cend() };
     auto vertSize = std::distance(vertShaderCode.begin(), vertShaderCode.end());
-    auto vertShaderCreateInfo =
-        vk::ShaderModuleCreateInfo{ {}, vertSize * sizeof(uint32_t), vertShaderCode.data() };
+    auto vertShaderCreateInfo = vk::ShaderModuleCreateInfo{ {}, vertSize * sizeof(uint32_t), vertShaderCode.data() };
     auto vertexShaderModule = device->createShaderModuleUnique(vertShaderCreateInfo);
 
-    shaderc::SpvCompilationResult fragShaderModule = compiler.CompileGlslToSpv( fragmentShader, shaderc_glsl_fragment_shader, "fragment shader", options);
-    if (fragShaderModule.GetCompilationStatus() != shaderc_compilation_status_success) {
-        std::cerr << fragShaderModule.GetErrorMessage();
-    }
+    shaderc::SpvCompilationResult fragShaderModule = compiler.CompileGlslToSpv( fragShader, shaderc_glsl_fragment_shader, "fragment shader", options);
+    if (fragShaderModule.GetCompilationStatus() != shaderc_compilation_status_success) std::cerr << fragShaderModule.GetErrorMessage();
     auto fragShaderCode = std::vector<uint32_t>{ fragShaderModule.cbegin(), fragShaderModule.cend() };
     auto fragSize = std::distance(fragShaderCode.begin(), fragShaderCode.end());
-    auto fragShaderCreateInfo =
-        vk::ShaderModuleCreateInfo{ {}, fragSize * sizeof(uint32_t), fragShaderCode.data() };
+    auto fragShaderCreateInfo = vk::ShaderModuleCreateInfo{ {}, fragSize * sizeof(uint32_t), fragShaderCode.data() };
     auto fragmentShaderModule = device->createShaderModuleUnique(fragShaderCreateInfo);
 
     auto vertShaderStageInfo = vk::PipelineShaderStageCreateInfo{ {}, vk::ShaderStageFlagBits::eVertex, *vertexShaderModule, "main" };
@@ -213,9 +189,11 @@ int main()
     auto colorAttachmentRef = vk::AttachmentReference{ 0, vk::ImageLayout::eColorAttachmentOptimal };
     auto subpass = vk::SubpassDescription{ {}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorAttachmentRef };
 
+
     auto semaphoreCreateInfo = vk::SemaphoreCreateInfo{};
     auto imageAvailableSemaphore = device->createSemaphoreUnique(semaphoreCreateInfo);
     auto renderFinishedSemaphore = device->createSemaphoreUnique(semaphoreCreateInfo);
+
 
     auto subpassDependency = vk::SubpassDependency{ VK_SUBPASS_EXTERNAL, 0, vk::PipelineStageFlagBits::eColorAttachmentOutput,
         vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite };
@@ -243,8 +221,8 @@ int main()
         auto beginInfo = vk::CommandBufferBeginInfo{};
         commandBuffers[i]->begin(beginInfo);
         vk::ClearValue clearValues{};
-        auto renderpassBeginInfo = vk::RenderPassBeginInfo{ renderpass.get(), framebuffers[i].get(), vk::Rect2D{{0,0}, extent}, 1, &clearValues };
 
+        auto renderpassBeginInfo = vk::RenderPassBeginInfo{ renderpass.get(), framebuffers[i].get(), vk::Rect2D{{0,0}, extent}, 1, &clearValues };
         commandBuffers[i]->beginRenderPass(renderpassBeginInfo, vk::SubpassContents::eInline);
         commandBuffers[i]->bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
         commandBuffers[i]->draw(3, 1, 0, 0);
